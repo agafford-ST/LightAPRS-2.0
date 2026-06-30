@@ -26,7 +26,7 @@
 
 //#define DEVMODE // Development mode. Uncomment to enable for debugging.
 
-//****************************** APRS CONFIG **********************************
+//******************************  APRS CONFIG **********************************
 char    CallSign[7]="NOCALL"; //DO NOT FORGET TO CHANGE YOUR CALLSIGN
 int8_t  CallNumber=11;//SSID http://www.aprs.org/aprs11/SSIDs.txt
 char    Symbol='O'; // 'O' for balloon, '>' for car, for more info : http://www.aprs.org/symbols/symbols-new.txt
@@ -44,24 +44,33 @@ uint16_t TelemetryDefInitialDelay = 1; // Minutes to wait before first transmiss
 uint16_t TelemetryDefInterval = 60;    // Minutes between subsequent transmissions
 //******************************************************************************
 
-uint16_t  BeaconWait=50;  //seconds sleep for next beacon (HF or VHF). This is optimized value, do not change this if possible.
-uint16_t  BattWait=60; //seconds sleep if super capacitors/batteries are below BattMin (important if power source is solar panel) 
-float     BattMin=3.3; // min Volts to wake up.
-float     DraHighVolt=5.0; // min Volts for radio module (DRA818V) to transmit (TX) 1 Watt, below this transmit 0.5 Watt.
+//****************************** CHASE CAR ALERT CONFIG ************************
+#define ENABLE_CHASE_ALERT               // Comment out this line to completely disable chase car alerts
+char     ChaseCallSign[10] = "NOCALL-9"; // Combined destination Call Sign and SSID
+uint16_t ChaseAlertInterval = 5;         // Minutes between direct alert messages (Default: 5)
+uint16_t BurstThresholdMeters = 300;     // Altitude drop threshold to detect balloon burst (300m = ~984ft)
+//******************************************************************************
 
-//****************************** APRS SETTINGS *********************************
+uint16_t  BeaconWait=50;  //seconds sleep for next beacon (HF or VHF). This is optimized value, do not change this if possible.
+uint16_t  BattWait=60;    //seconds sleep if super capacitors/batteries are below BattMin (important if power source is solar panel) 
+float     BattMin=3.3;    // min Volts to wake up.
+//float     GpsMinVolt=4.5; //min Volts for GPS to wake up. (important if power source is solar panel) 
+float     DraHighVolt=5.0;    // min Volts for radio module (DRA818V) to transmit (TX) 1 Watt, below this transmit 0.5 Watt.
+
+//******************************  APRS SETTINGS *********************************
+
 //do not change WIDE path settings below if you don't know what you are doing :) 
 uint8_t   Wide1=1; // 1 for WIDE1-1 path
 uint8_t   Wide2=1; // 1 for WIDE2-1 path
 
 /**
-Airborne stations above a few thousand feet should ideally use NO path at all, or at the maximum just WIDE2-1 alone.
-Due to their extended transmit range due to elevation, multiple digipeater hops are not required by airborne stations.
-Multi-hop paths just add needless congestion on the shared APRS channel in areas hundreds of miles away from the aircraft's own location.
-NEVER use WIDE1-1 in an airborne path, since this can potentially trigger hundreds of home stations simultaneously over a radius of 150-200 miles.
-*/
+Airborne stations above a few thousand feet should ideally use NO path at all, or at the maximum just WIDE2-1 alone.  
+Due to their extended transmit range due to elevation, multiple digipeater hops are not required by airborne stations.  
+Multi-hop paths just add needless congestion on the shared APRS channel in areas hundreds of miles away from the aircraft's own location.  
+NEVER use WIDE1-1 in an airborne path, since this can potentially trigger hundreds of home stations simultaneously over a radius of 150-200 miles. 
+ */
 uint8_t pathSize=2; // 2 for WIDE1-N,WIDE2-N ; 1 for WIDE2-N
-boolean autoPathSizeHighAlt = true; //force path to WIDE2-N only for high altitude (airborne) beaconing (over 1.000 meters (3.280 feet)) 
+boolean autoPathSizeHighAlt = true; //force path to WIDE2-N only for high altitude (airborne) beaconing (over 1,000 meters (3,280 feet)) 
 boolean  aliveStatus = true; //for tx status message on first wake-up just once.
 boolean radioSetup = false; //do not change this, temp value
 static char telemetry_buff[100];// telemetry buffer
@@ -72,7 +81,18 @@ unsigned long lastDefTxMillis = 0;
 bool initialDefSent = false;
 #endif
 
-//****************************** GPS SETTINGS   *********************************
+#ifdef ENABLE_CHASE_ALERT
+unsigned long lastChaseTxMillis = 0;
+float         maxAltitudeFeet = 0.0;
+float         prevAltitudeFeet = 0.0;
+unsigned long prevAltitudeTimeMillis = 0;
+float         currentVerticalRateFPM = 0.0;
+bool          burstDetected = false;
+bool          secondBurstSent = false;
+unsigned long burstTimeMillis = 0;
+#endif
+
+//******************************  GPS SETTINGS   *********************************
 int16_t   GpsResetTime=1800; // timeout for reset if GPS is not fixed
 boolean ublox_high_alt_mode_enabled = false; //do not change this
 int16_t GpsInvalidTime=0; //do not change this
@@ -82,6 +102,22 @@ boolean gpsSetup=false; //do not change this.
 
 SFE_UBLOX_GPS myGPS;
 Adafruit_BMP085 bmp;
+
+// Forward declarations
+float readBatt();
+void gpsStart();
+void setupUBloxDynamicModel();
+void gpsDebug();
+void updatePosition();
+void updateTelemetry();
+void sendLocationAndTelemetry();
+void sendStatus();
+void sendTelemetryDefinitions();
+void sendChaseAlert(float alt, float rate);
+void sendBurstAlert(int stage);
+void sleepSeconds(int sec);
+byte configDra818(char *freq);
+void freeMem();
 
 void setup() {
   // While the energy rises slowly with the solar panel, 
@@ -102,8 +138,10 @@ void setup() {
   // Wait up to 5 seconds for serial to be opened, to allow catching
   // startup messages on native USB boards (that do not reset when
   // serial is opened).
+  //Watchdog.reset();  
   unsigned long start = millis();
   while (millis() - start < 5000 && !SerialUSB){;}
+  //Watchdog.reset(); 
 
   SerialUSB.println(F("Starting"));
   Serial1.begin(9600);// for DorjiDRA818V
@@ -129,19 +167,30 @@ void setup() {
   SerialUSB.print(CallSign);
   SerialUSB.print(F("-"));
   SerialUSB.println(CallNumber);
+
 }
 
 void loop() {
 
 if (readBatt() > BattMin) {
+
+    #ifdef ENABLE_CHASE_ALERT
+      // Non-blocking check for the 1-minute follow-up burst alert
+      // This will evaluate to true on the first loop iteration after 60 seconds have passed
+      if (burstDetected && !secondBurstSent && (millis() - burstTimeMillis >= 60000UL)) {
+        sendBurstAlert(2);
+        secondBurstSent = true;
+      }
+    #endif
     
     if (aliveStatus) {	
-      sendStatus();
+      sendStatus();	   	  
       aliveStatus = false;
 
       while (readBatt() < BattMin) {
-        sleepSeconds(BattWait);
+        sleepSeconds(BattWait); 
       }
+   
     }
       
       if(!gpsSetup) {gpsStart();}
@@ -157,7 +206,7 @@ if (readBatt() > BattMin) {
           if(autoPathSizeHighAlt && ((myGPS.getAltitude() * 3.2808399)  / 1000.f) > 3000){
             //force to use high altitude settings (WIDE2-n)
             APRS_setPathSize(1);
-          } else {
+            } else {
             //use default settings  
             APRS_setPathSize(pathSize);
           }
@@ -180,9 +229,49 @@ if (readBatt() > BattMin) {
             }
           #endif
 
+          #ifdef ENABLE_CHASE_ALERT
+            float currentAltFeet = (myGPS.getAltitude() * 3.2808399) / 1000.f;
+            unsigned long currentChaseMillis = millis();
+
+            // Calculate Vertical Rate (Feet Per Minute)
+            if (prevAltitudeTimeMillis > 0) {
+              float altitudeChange = currentAltFeet - prevAltitudeFeet;
+              float timeChangeMinutes = (currentChaseMillis - prevAltitudeTimeMillis) / 60000.f;
+              if (timeChangeMinutes > 0.001) {
+                currentVerticalRateFPM = altitudeChange / timeChangeMinutes;
+              }
+            }
+            prevAltitudeFeet = currentAltFeet;
+            prevAltitudeTimeMillis = currentChaseMillis;
+
+            // Track Maximum Altitude
+            if (currentAltFeet > maxAltitudeFeet) {
+              maxAltitudeFeet = currentAltFeet;
+            }
+
+            // Burst Detection Logic - sets the flag and records the exact time
+            if (!burstDetected && maxAltitudeFeet > 0 && (maxAltitudeFeet - currentAltFeet >= (BurstThresholdMeters * 3.28084))) {
+              burstDetected = true;
+              burstTimeMillis = currentChaseMillis;
+              
+              sendBurstAlert(1); 
+            }
+
+            // Standard Interval Chase Alert
+            unsigned long chaseIntervalMs = ChaseAlertInterval * 60000UL;
+            if (lastChaseTxMillis == 0) {
+              lastChaseTxMillis = currentChaseMillis;
+            }
+            else if (currentChaseMillis - lastChaseTxMillis >= chaseIntervalMs) {
+              sendChaseAlert(currentAltFeet, currentVerticalRateFPM);
+              lastChaseTxMillis = currentChaseMillis;
+            }
+          #endif
+
           freeMem();
           SerialUSB.flush();
-          sleepSeconds(BeaconWait);
+          sleepSeconds(BeaconWait);       
+          
         }else{
           GpsInvalidTime++;
           if(GpsInvalidTime > GpsResetTime){
@@ -190,7 +279,7 @@ if (readBatt() > BattMin) {
             ublox_high_alt_mode_enabled = false; //gps sleep mode resets high altitude mode.
             delay(1000);
             GpsON;
-            GpsInvalidTime=0;
+            GpsInvalidTime=0;     
           }
         }
       } else {
@@ -198,6 +287,7 @@ if (readBatt() > BattMin) {
         SerialUSB.println(F("Not enough sattelites"));
         #endif
       }
+
     
   } else {
     sleepSeconds(BattWait);
@@ -233,6 +323,7 @@ void sleepSeconds(int sec) {
   for (int i = 0; i < sec; i++) {
     delay(1000);   
   }
+
 }
 
 byte configDra818(char *freq)
@@ -241,7 +332,7 @@ byte configDra818(char *freq)
   char ack[3];
   int n;
   delay(2000);
-  char cmd[50];
+  char cmd[50];//"AT+DMOSETGROUP=0,144.8000,144.8000,0000,4,0000"
   sprintf(cmd, "AT+DMOSETGROUP=0,%s,%s,0000,4,0000", freq, freq);
   Serial1.println(cmd);
   SerialUSB.println("RF Config");
@@ -256,13 +347,14 @@ byte configDra818(char *freq)
   }
   delay(2000);
   RadioOFF;
+
   if (ack[0] == 0x30) {
       SerialUSB.print(F("Frequency updated: "));
       SerialUSB.print(freq);
       SerialUSB.println(F("MHz"));
-  } else {
+    } else {
       SerialUSB.println(F("Frequency update error!!!"));    
-  }
+    }
   return (ack[0] == 0x30) ? 1 : 0;
 }
 
@@ -272,6 +364,7 @@ void updatePosition() {
   int temp = 0;
   double d_lat = myGPS.getLatitude() / 10000000.f;
   double dm_lat = 0.0;
+
   if (d_lat < 0.0) {
     temp = -(int)d_lat;
     dm_lat = temp * 100.0 - (d_lat + temp) * 60.0;
@@ -281,6 +374,7 @@ void updatePosition() {
   }
 
   dtostrf(dm_lat, 7, 2, latStr);
+
   if (dm_lat < 1000) {
     latStr[0] = '0';
   }
@@ -292,10 +386,12 @@ void updatePosition() {
   }
 
   APRS_setLat(latStr);
+
   // Convert and set longitude NMEA string Degree Minute Hundreths of minutes ddmm.hh[E,W].
   char lonStr[10];
   double d_lon = myGPS.getLongitude() / 10000000.f;
   double dm_lon = 0.0;
+
   if (d_lon < 0.0) {
     temp = -(int)d_lon;
     dm_lon = temp * 100.0 - (d_lon + temp) * 60.0;
@@ -305,6 +401,7 @@ void updatePosition() {
   }
 
   dtostrf(dm_lon, 8, 2, lonStr);
+
   if (dm_lon < 10000) {
     lonStr[0] = '0';
   }
@@ -323,7 +420,6 @@ void updatePosition() {
 }
 
 void updateTelemetry() {
-  // Base Course/Speed/Altitude formatting ONLY
   sprintf(telemetry_buff, "%03d", (int)(myGPS.getHeading() / 100000));
   telemetry_buff[3] = '/';
   sprintf(telemetry_buff + 4, "%03d", (int)(myGPS.getGroundSpeed() * 0.00194384f));
@@ -331,17 +427,20 @@ void updateTelemetry() {
   telemetry_buff[8] = 'A';
   telemetry_buff[9] = '=';
 
+  //fixing negative altitude values causing display bug on aprs.fi
   float tempAltitude = (myGPS.getAltitude() * 3.2808399)  / 1000.f;
+
   if (tempAltitude > 0) {
+    //for positive values
     sprintf(telemetry_buff + 10, "%06lu", (long)tempAltitude);
   } else {
-    sprintf(telemetry_buff + 10, "%06ld", (long)tempAltitude);
+    //for negative values
+    sprintf(telemetry_buff + 10, "%06d", (long)tempAltitude);
   }
   
   telemetry_buff[16] = ' '; 
-  telemetry_buff[17] = '\0'; // Strictly terminate the string here
+  telemetry_buff[17] = '\0'; 
   
-  // Append user comment
   strcat(telemetry_buff, comment);
 
   #if defined(DEVMODE)
@@ -351,21 +450,19 @@ void updateTelemetry() {
 
 void sendLocationAndTelemetry() {
   SerialUSB.println(F("Location & Telemetry sending..."));
-  if (readBatt() > DraHighVolt) RfHiPwr; 
-  else RfLowPwr; 
+  if (readBatt() > DraHighVolt) RfHiPwr; //DRA Power 1 Watt
+  else RfLowPwr; //DRA Power 0.5 Watt
   RadioON;
   delay(2000);
 
-  // 1. Send Location Packet
   PttON;
   delay(1000);  
   APRS_sendLoc(telemetry_buff);
   delay(10);
   PttOFF;
 
-  delay(1000); // 1-second gap to let digipeaters reset
+  delay(1000); 
 
-  // 2. Generate and Send Standalone Telemetry Packet
   char t_buff[60];
   int t_seq = TxCount % 1000;
   int t_batt = (int)(readBatt() * 100);             
@@ -377,7 +474,6 @@ void sendLocationAndTelemetry() {
   
   int t_sats = (int)myGPS.getSIV();                 
 
-  // Notice no T# here. Our updated library prepends it automatically.
   sprintf(t_buff, "%03d,%03d,%03d,%03d,%03d,%03d,00000000", 
           t_seq, t_batt, t_temp, t_press, t_seq, t_sats);
 
@@ -387,7 +483,6 @@ void sendLocationAndTelemetry() {
   delay(10);
   PttOFF;
 
-  // Power Down
   RadioOFF;
   delay(1000);
   
@@ -412,7 +507,6 @@ void sendTelemetryDefinitions() {
   RadioON;
   delay(2000); 
 
-  // 1. Send PARM
   PttON; 
   delay(500); 
   sprintf(msgBuff, "%s:PARM.Batt,Temp,Press,TxC,Sats", paddedCall); 
@@ -422,7 +516,6 @@ void sendTelemetryDefinitions() {
 
   delay(1000); 
 
-  // 2. Send UNIT
   PttON; 
   delay(500);
   sprintf(msgBuff, "%s:UNIT.V,degC,hPa,cnt,cnt", paddedCall); 
@@ -432,7 +525,6 @@ void sendTelemetryDefinitions() {
 
   delay(1000); 
 
-  // 3. Send EQNS
   PttON; 
   delay(500);
   sprintf(msgBuff, "%s:EQNS.0,0.01,0,0,1,-50,0.016,0,0,0,1,0,0,1,0", paddedCall); 
@@ -445,7 +537,79 @@ void sendTelemetryDefinitions() {
 }
 #endif
 
+#ifdef ENABLE_CHASE_ALERT
+void sendChaseAlert(float alt, float rate) {
+  SerialUSB.println(F("Sending Direct Message to Chase Car..."));
+  
+  char paddedCall[10];
+  sprintf(paddedCall, "%-9s", ChaseCallSign); 
+
+  int heading = (int)(myGPS.getHeading() / 100000);
+  float battery = readBatt();
+  
+  char msgBuff[70];
+  if (rate >= 0) {
+    sprintf(msgBuff, "%s:Alt:%dft Clmb:%dfpm Hdg:%d Batt:%.1fV", 
+            paddedCall, (int)alt, (int)rate, heading, battery);
+  } else {
+    sprintf(msgBuff, "%s:Alt:%dft Sink:%dfpm Hdg:%d Batt:%.1fV", 
+            paddedCall, (int)alt, (int)abs(rate), heading, battery);
+  }
+
+  if (readBatt() > DraHighVolt) RfHiPwr; 
+  else RfLowPwr; 
+  RadioON;
+  delay(2000); 
+
+  PttON; 
+  delay(500); 
+  APRS_sendMsg(msgBuff);
+  delay(10); 
+  PttOFF;
+
+  RadioOFF;
+  SerialUSB.println(F("Chase Car Alert Message Sent."));
+  
+  SerialUSB.print(F("Chase Message sent - TxCount: "));
+  SerialUSB.println(TxCount);
+  TxCount++;
+}
+
+void sendBurstAlert(int stage) {
+  SerialUSB.print(F("Sending Burst Alert Stage "));
+  SerialUSB.print(stage);
+  SerialUSB.println(F(" to Chase Car..."));
+  
+  char paddedCall[10];
+  sprintf(paddedCall, "%-9s", ChaseCallSign); 
+
+  char msgBuff[60];
+  if (stage == 1) {
+    sprintf(msgBuff, "%s:CRITICAL: Balloon Burst Detected!", paddedCall);
+  } else {
+    sprintf(msgBuff, "%s:ALERT: Balloon is descending!", paddedCall);
+  }
+
+  if (readBatt() > DraHighVolt) RfHiPwr; 
+  else RfLowPwr; 
+  RadioON;
+  delay(2000); 
+
+  PttON; 
+  delay(500); 
+  APRS_sendMsg(msgBuff);
+  delay(10); 
+  PttOFF;
+
+  RadioOFF;
+  SerialUSB.println(F("Burst Alert Sent."));
+  
+  TxCount++;
+}
+#endif
+
 void sendStatus() {
+
   SerialUSB.println(F("Status sending..."));
   if (readBatt() > DraHighVolt) RfHiPwr; //DRA Power 1 Watt
   else RfLowPwr; //DRA Power 0.5 Watt
@@ -508,10 +672,11 @@ void gpsDebug() {
     SerialUSB.print(bmp.readTemperature());
     SerialUSB.print(" C");
     
-    SerialUSB.print(" Press: ");
+    SerialUSB.print(" Press: ");    
     SerialUSB.print(bmp.readPressure() / 100.0);
     SerialUSB.print(" hPa");
     SerialUSB.println();  
+
 #endif
 }
 
@@ -534,12 +699,15 @@ void setupUBloxDynamicModel() {
         SerialUSB.println(myGPS.getDynamicModel());
       #endif  
     }
-} 
+  
+  } 
 
 float readBatt() {
+
   float R1 = 560000.0; // 560K
   float R2 = 100000.0; // 100K
   float value = 0.0f;
+
   do {    
     value =analogRead(BattPin);
     value +=analogRead(BattPin);
@@ -549,10 +717,12 @@ float readBatt() {
     value = value / (R2/(R1+R2));
   } while (value > 20.0);
   return value ;
+
 }
 
 void freeMem() {
 #if defined(DEVMODE)
   SerialUSB.print(F("Free RAM: ")); SerialUSB.print(freeMemory(), DEC); SerialUSB.println(F(" byte"));
 #endif
+
 }
