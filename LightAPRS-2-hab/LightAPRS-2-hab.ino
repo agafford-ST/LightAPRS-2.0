@@ -13,12 +13,15 @@
 #define PwDwPin       A3
 #define PowerHL       A4
 #define PttPin        3
+#define TX_LED_PIN    A1
 
 //macros
 #define GpsON       digitalWrite(GpsPwr, LOW)
 #define GpsOFF      digitalWrite(GpsPwr, HIGH)
-#define PttON       digitalWrite(PttPin, HIGH)
-#define PttOFF      digitalWrite(PttPin, LOW)
+// #define PttON       digitalWrite(PttPin, HIGH)
+// #define PttOFF      digitalWrite(PttPin, LOW)
+#define PttON       do { digitalWrite(PttPin, HIGH); digitalWrite(TX_LED_PIN, HIGH); } while(0)
+#define PttOFF      do { digitalWrite(PttPin, LOW); digitalWrite(TX_LED_PIN, LOW); } while(0)
 #define RadioON     digitalWrite(PwDwPin, HIGH)
 #define RadioOFF    digitalWrite(PwDwPin, LOW)
 #define RfHiPwr     digitalWrite(PowerHL, HIGH)
@@ -27,7 +30,7 @@
 //#define DEVMODE // Development mode. Uncomment to enable for debugging.
 
 //******************************  APRS CONFIG **********************************
-char    CallSign[7]="NOCALL"; //DO NOT FORGET TO CHANGE YOUR CALLSIGN
+char    CallSign[7]="KC5DJY"; //DO NOT FORGET TO CHANGE YOUR CALLSIGN
 int8_t  CallNumber=11;//SSID http://www.aprs.org/aprs11/SSIDs.txt
 char    Symbol='O'; // 'O' for balloon, '>' for car, for more info : http://www.aprs.org/symbols/symbols-new.txt
 bool    alternateSymbolTable = false ; //false = '/' , true = '\'
@@ -46,7 +49,7 @@ uint16_t TelemetryDefInterval = 60;    // Minutes between subsequent transmissio
 
 //****************************** CHASE CAR ALERT CONFIG ************************
 #define ENABLE_CHASE_ALERT               // Comment out this line to completely disable chase car alerts
-char     ChaseCallSign[10] = "NOCALL-9"; // Combined destination Call Sign and SSID
+char     ChaseCallSign[10] = "KC5DJY-9"; // Combined destination Call Sign and SSID
 uint16_t ChaseAlertInterval = 5;         // Minutes between direct alert messages (Default: 5)
 uint16_t BurstThresholdMeters = 300;     // Altitude drop threshold to detect balloon burst (300m = ~984ft)
 //******************************************************************************
@@ -128,6 +131,8 @@ void setup() {
   pinMode(BattPin, INPUT);
   pinMode(PwDwPin, OUTPUT);
   pinMode(PowerHL, OUTPUT);
+  pinMode(TX_LED_PIN, OUTPUT);
+  PORT->Group[g_APinDescription[TX_LED_PIN].ulPort].PINCFG[g_APinDescription[TX_LED_PIN].ulPin].bit.DRVSTR = 1;
   
   GpsON;
   PttOFF;
