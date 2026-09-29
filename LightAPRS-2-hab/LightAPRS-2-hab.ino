@@ -30,7 +30,7 @@
 //#define DEVMODE // Development mode. Uncomment to enable for debugging.
 
 //******************************  APRS CONFIG **********************************
-char    CallSign[7]="KC5DJY"; //DO NOT FORGET TO CHANGE YOUR CALLSIGN
+char    CallSign[7]="NOCALL"; //DO NOT FORGET TO CHANGE YOUR CALLSIGN
 int8_t  CallNumber=11;//SSID http://www.aprs.org/aprs11/SSIDs.txt
 char    Symbol='O'; // 'O' for balloon, '>' for car, for more info : http://www.aprs.org/symbols/symbols-new.txt
 bool    alternateSymbolTable = false ; //false = '/' , true = '\'
@@ -49,7 +49,7 @@ uint16_t TelemetryDefInterval = 60;    // Minutes between subsequent transmissio
 
 //****************************** CHASE CAR ALERT CONFIG ************************
 #define ENABLE_CHASE_ALERT               // Comment out this line to completely disable chase car alerts
-char     ChaseCallSign[10] = "KC5DJY-9"; // Combined destination Call Sign and SSID
+char     ChaseCallSign[10] = "NOCALL-9"; // Combined destination Call Sign and SSID
 uint16_t ChaseAlertInterval = 5;         // Minutes between direct alert messages (Default: 5)
 uint16_t BurstThresholdMeters = 300;     // Altitude drop threshold to detect balloon burst (300m = ~984ft)
 //******************************************************************************
