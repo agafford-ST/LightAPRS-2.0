@@ -48,7 +48,7 @@ uint16_t TelemetryDefInterval = 60;    // Minutes between subsequent transmissio
 //******************************************************************************
 
 //****************************** CHASE CAR ALERT CONFIG ************************
-#define ENABLE_CHASE_ALERT               // Comment out this line to completely disable chase car alerts
+//#define ENABLE_CHASE_ALERT               // Comment out this line to completely disable chase car alerts
 char     ChaseCallSign[10] = "NOCALL-9"; // Combined destination Call Sign and SSID
 uint16_t ChaseAlertInterval = 5;         // Minutes between direct alert messages (Default: 5)
 uint16_t BurstThresholdMeters = 300;     // Altitude drop threshold to detect balloon burst (300m = ~984ft)
