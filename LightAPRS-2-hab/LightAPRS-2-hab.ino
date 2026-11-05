@@ -133,7 +133,7 @@ void setup() {
   pinMode(PowerHL, OUTPUT);
   pinMode(TX_LED_PIN, OUTPUT);
   PORT->Group[g_APinDescription[TX_LED_PIN].ulPort].PINCFG[g_APinDescription[TX_LED_PIN].ulPin].bit.DRVSTR = 1;
-  
+
   GpsON;
   PttOFF;
   RadioOFF; 
